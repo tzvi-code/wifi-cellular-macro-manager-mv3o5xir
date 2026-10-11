@@ -8,18 +8,20 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.NetworkRequest;
 import android.net.TransportInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiNetworkSpecifier;
+import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -40,6 +42,9 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -54,18 +59,18 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "SmartMacroPrefs";
     private static final String KEY_MACRO_ENABLED = "macro_enabled";
     private static final String KEY_AUTO_CELLULAR = "auto_cellular_control";
+    private static final String KEY_DISCONNECT_FAR = "disconnect_far_wifi";
     private static final String KEY_SHOW_SETTINGS_PANEL = "show_settings_panel";
     private static final String KEY_RSSI_THRESHOLD = "rssi_threshold";
     private static final String KEY_SAVED_SSIDS = "saved_ssids";
+    private static final String PREF_PASS_PREFIX = "wifi_pass_";
     private static final int PERMISSION_REQ_CODE = 101;
 
     // Macro State
     private static final int STATE_UNKNOWN = 0;
     private static final int STATE_DISCONNECTED_CELLULAR_ON = 1;
     private static final int STATE_CONNECTED_CELLULAR_OFF = 2;
-    private static final int STATE_SCANNING = 3;
     private int currentMacroState = STATE_UNKNOWN;
-    private boolean isFirstRunEvaluation = true;
 
     private WifiManager wifiManager;
     private ConnectivityManager connectivityManager;
@@ -73,22 +78,31 @@ public class MainActivity extends Activity {
     private LocationManager locationManager;
     private SharedPreferences prefs;
 
+    // Active network callback for Android 10+ explicit connections
+    private ConnectivityManager.NetworkCallback activeNetworkCallback;
+    private String currentlyBoundSsid = null;
+
     // UI elements
     private Switch switchMacroToggle;
     private TextView tvMacroState;
     private TextView tvOverallStatusBanner;
+    private TextView tvLivePingStatus;
     private LinearLayout locationWarningBanner;
     private LinearLayout layoutPromptBanner;
     private TextView tvPromptText;
     private Button btnPromptAction;
-    private Button btnPromptDismiss;
 
     private TextView tvWifiStatus;
     private TextView tvCellularStatus;
     private Button btnQuickAddCurrent;
+    private Button btnDisconnectNow;
+    private Button btnToggleWifiHardware;
+    private Button btnTestInternetPing;
+
     private TextView tvThresholdValue;
     private SeekBar seekThreshold;
-    private CheckBox cbAutoCellular;
+    private CheckBox cbAutoSwitch;
+    private CheckBox cbDisconnectFar;
     private CheckBox cbShowPanelPrompt;
     private LinearLayout layoutNetworkList;
     private TextView tvLogConsole;
@@ -103,7 +117,7 @@ public class MainActivity extends Activity {
             if (isMacroEnabled()) {
                 evaluateMacroRules(false);
             }
-            handler.postDelayed(this, 10000); // 10 second monitoring loop
+            handler.postDelayed(this, 8000);
         }
     };
 
@@ -133,6 +147,7 @@ public class MainActivity extends Activity {
         buildUI();
         registerReceivers();
         checkPermissions();
+        checkActiveInternetConnection();
     }
 
     private void buildUI() {
@@ -144,7 +159,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-        root.setPadding(30, 36, 30, 60);
+        root.setPadding(28, 32, 28, 50);
 
         // Header Title
         TextView tvHeader = new TextView(this);
@@ -159,7 +174,7 @@ public class MainActivity extends Activity {
         tvSubtitle.setText(getString(R.string.app_subtitle));
         tvSubtitle.setTextSize(13);
         tvSubtitle.setTextColor(0xFF546E7A);
-        tvSubtitle.setPadding(0, 4, 0, 16);
+        tvSubtitle.setPadding(0, 4, 0, 14);
         tvSubtitle.setGravity(Gravity.RIGHT);
         root.addView(tvSubtitle);
 
@@ -187,7 +202,7 @@ public class MainActivity extends Activity {
         root.addView(locationWarningBanner);
         addVerticalSpacer(root, 10);
 
-        // In-App Non-intrusive Recommendation Banner (NEVER opens system dialog forcefully)
+        // In-App Notification / Helper Banner
         layoutPromptBanner = new LinearLayout(this);
         layoutPromptBanner.setOrientation(LinearLayout.VERTICAL);
         layoutPromptBanner.setBackgroundResource(R.drawable.bg_suggestion_badge);
@@ -204,11 +219,11 @@ public class MainActivity extends Activity {
         promptBtnRow.setOrientation(LinearLayout.HORIZONTAL);
         promptBtnRow.setPadding(0, 10, 0, 0);
 
-        btnPromptAction = createSmallButton("פתח הגדרות סלולר");
-        btnPromptAction.setOnClickListener(v -> openCellularSettings());
+        btnPromptAction = createSmallButton("פתח לוח בקרה מהיר");
+        btnPromptAction.setOnClickListener(v -> openInternetSettingsPanel());
         promptBtnRow.addView(btnPromptAction);
 
-        btnPromptDismiss = createSmallButton("הסתר");
+        Button btnPromptDismiss = createSmallButton("הסתר");
         btnPromptDismiss.setBackgroundResource(R.drawable.badge_bg);
         btnPromptDismiss.setTextColor(0xFF546E7A);
         LinearLayout.LayoutParams lpDismiss = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -226,12 +241,21 @@ public class MainActivity extends Activity {
         tvOverallStatusBanner.setTextSize(14);
         tvOverallStatusBanner.setTypeface(Typeface.DEFAULT_BOLD);
         tvOverallStatusBanner.setBackgroundResource(R.drawable.bg_status_badge);
-        tvOverallStatusBanner.setPadding(24, 18, 24, 18);
+        tvOverallStatusBanner.setPadding(22, 16, 22, 16);
         tvOverallStatusBanner.setTextColor(0xFF1B5E20);
         tvOverallStatusBanner.setGravity(Gravity.CENTER);
-        tvOverallStatusBanner.setText("מתחבר ובודק מצב רשתות...");
+        tvOverallStatusBanner.setText("בודק סטטוס חיבור וגלישה...");
         root.addView(tvOverallStatusBanner);
-        addVerticalSpacer(root, 16);
+
+        // Live Ping Indicator
+        tvLivePingStatus = new TextView(this);
+        tvLivePingStatus.setTextSize(12);
+        tvLivePingStatus.setTextColor(0xFF37474F);
+        tvLivePingStatus.setGravity(Gravity.CENTER);
+        tvLivePingStatus.setPadding(0, 6, 0, 12);
+        tvLivePingStatus.setText("בדיקת זרימת נתונים חיה: בודק...");
+        root.addView(tvLivePingStatus);
+        addVerticalSpacer(root, 6);
 
         // 2. Master Toggle Card
         LinearLayout macroCard = createCardLayout(this);
@@ -262,15 +286,15 @@ public class MainActivity extends Activity {
         switchMacroToggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
             prefs.edit().putBoolean(KEY_MACRO_ENABLED, isChecked).apply();
             updateMacroStatusLabel();
-            logEvent(isChecked ? "מאקרו הופעל: מנטר רשתות מוכרות" : "מאקרו הושבת ע״י המשתמש");
+            logEvent(isChecked ? "מאקרו הופעל: יבצע חיבור וניתוק אמיתיים" : "מאקרו הושבת ע״י המשתמש");
             if (isChecked) {
                 evaluateMacroRules(false);
             }
         });
         root.addView(macroCard);
-        addVerticalSpacer(root, 16);
+        addVerticalSpacer(root, 14);
 
-        // 3. Current Live Hardware State Card
+        // 3. Current Live Hardware State & Direct Action Card
         LinearLayout statusCard = createCardLayout(this);
         TextView tvCurrentHeader = createSectionHeader(getString(R.string.label_current_state));
         statusCard.addView(tvCurrentHeader);
@@ -286,7 +310,7 @@ public class MainActivity extends Activity {
         btnQuickAddCurrent.setOnClickListener(v -> {
             String current = cleanSsid(getCurrentConnectedSsid());
             if (current != null && !current.isEmpty()) {
-                addTrustedNetwork(current);
+                addTrustedNetwork(current, null);
             } else {
                 Toast.makeText(this, "לא זוהה שם רשת פעילה, נסה להפעיל מיקום או להזין ידנית", Toast.LENGTH_SHORT).show();
             }
@@ -296,16 +320,53 @@ public class MainActivity extends Activity {
         tvCellularStatus = new TextView(this);
         tvCellularStatus.setTextSize(14);
         tvCellularStatus.setTextColor(0xFF263238);
-        tvCellularStatus.setPadding(0, 8, 0, 12);
+        tvCellularStatus.setPadding(0, 6, 0, 10);
         statusCard.addView(tvCellularStatus);
+
+        // REAL DIRECT ACTION BUTTONS (Works actually!)
+        LinearLayout directActionsRow = new LinearLayout(this);
+        directActionsRow.setOrientation(LinearLayout.HORIZONTAL);
+        directActionsRow.setPadding(0, 4, 0, 8);
+
+        btnDisconnectNow = new Button(this);
+        btnDisconnectNow.setText("⚡ " + getString(R.string.action_disconnect_now));
+        btnDisconnectNow.setBackgroundResource(R.drawable.btn_danger);
+        btnDisconnectNow.setTextColor(0xFFFFFFFF);
+        btnDisconnectNow.setTextSize(13);
+        LinearLayout.LayoutParams lpBtnDis = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lpBtnDis.setMargins(6, 0, 0, 0);
+        btnDisconnectNow.setLayoutParams(lpBtnDis);
+        btnDisconnectNow.setOnClickListener(v -> {
+            logEvent("ביצוע ניתוק יזום מ-Wi-Fi...");
+            performRealDisconnect(true);
+        });
+        directActionsRow.addView(btnDisconnectNow);
+
+        btnToggleWifiHardware = new Button(this);
+        btnToggleWifiHardware.setText("📶 הפעל/כבה Wi-Fi");
+        btnToggleWifiHardware.setBackgroundResource(R.drawable.btn_secondary);
+        btnToggleWifiHardware.setTextColor(0xFF0D47A1);
+        btnToggleWifiHardware.setTextSize(13);
+        LinearLayout.LayoutParams lpBtnTog = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        btnToggleWifiHardware.setLayoutParams(lpBtnTog);
+        btnToggleWifiHardware.setOnClickListener(v -> toggleWifiHardware());
+        directActionsRow.addView(btnToggleWifiHardware);
+
+        statusCard.addView(directActionsRow);
 
         LinearLayout btnRowSettings = new LinearLayout(this);
         btnRowSettings.setOrientation(LinearLayout.HORIZONTAL);
 
+        btnTestInternetPing = createSmallButton("🌐 " + getString(R.string.action_test_ping));
+        btnTestInternetPing.setOnClickListener(v -> checkActiveInternetConnection());
+        LinearLayout.LayoutParams btnP0 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f);
+        btnP0.setMargins(6, 0, 0, 0);
+        btnRowSettings.addView(btnTestInternetPing, btnP0);
+
         Button btnWifiSetting = createSmallButton(getString(R.string.action_open_wifi_settings));
         btnWifiSetting.setOnClickListener(v -> openWifiSettings());
         LinearLayout.LayoutParams btnP1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        btnP1.setMargins(0, 0, 8, 0);
+        btnP1.setMargins(6, 0, 0, 0);
         btnRowSettings.addView(btnWifiSetting, btnP1);
 
         Button btnCellSetting = createSmallButton(getString(R.string.action_open_data_settings));
@@ -315,35 +376,42 @@ public class MainActivity extends Activity {
         statusCard.addView(btnRowSettings);
 
         root.addView(statusCard);
-        addVerticalSpacer(root, 16);
+        addVerticalSpacer(root, 14);
 
         // 4. Automation Rules Card
         LinearLayout rulesCard = createCardLayout(this);
         TextView tvRulesHeader = createSectionHeader(getString(R.string.title_rules));
         rulesCard.addView(tvRulesHeader);
 
-        cbAutoCellular = new CheckBox(this);
-        cbAutoCellular.setText(getString(R.string.rule_auto_switch));
-        cbAutoCellular.setChecked(prefs.getBoolean(KEY_AUTO_CELLULAR, true));
-        cbAutoCellular.setTextSize(14);
-        cbAutoCellular.setTextColor(0xFF212121);
-        cbAutoCellular.setOnCheckedChangeListener((buttonView, isChecked) -> {
+        cbAutoSwitch = new CheckBox(this);
+        cbAutoSwitch.setText(getString(R.string.rule_auto_switch));
+        cbAutoSwitch.setChecked(prefs.getBoolean(KEY_AUTO_CELLULAR, true));
+        cbAutoSwitch.setTextSize(14);
+        cbAutoSwitch.setTextColor(0xFF212121);
+        cbAutoSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
             prefs.edit().putBoolean(KEY_AUTO_CELLULAR, isChecked).apply();
-            logEvent("הגדרת ניטור אוטומטי: " + (isChecked ? "פעיל" : "מבוטל"));
+            logEvent("הגדרת חיבור אוטומטי אמיתי: " + (isChecked ? "פעיל" : "מבוטל"));
         });
-        rulesCard.addView(cbAutoCellular);
+        rulesCard.addView(cbAutoSwitch);
+
+        cbDisconnectFar = new CheckBox(this);
+        cbDisconnectFar.setText(getString(R.string.rule_disconnect_when_far));
+        cbDisconnectFar.setChecked(prefs.getBoolean(KEY_DISCONNECT_FAR, true));
+        cbDisconnectFar.setTextSize(13);
+        cbDisconnectFar.setTextColor(0xFF2E7D32);
+        cbDisconnectFar.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.edit().putBoolean(KEY_DISCONNECT_FAR, isChecked).apply();
+            logEvent("הגדרת ניתוק מ-Wi-Fi חלש: " + (isChecked ? "פעיל" : "מבוטל"));
+        });
+        rulesCard.addView(cbDisconnectFar);
 
         cbShowPanelPrompt = new CheckBox(this);
         cbShowPanelPrompt.setText(getString(R.string.rule_open_settings_prompt));
-        // Default to false so no external panels or intrusive prompts trigger unexpectedly
         cbShowPanelPrompt.setChecked(prefs.getBoolean(KEY_SHOW_SETTINGS_PANEL, false));
         cbShowPanelPrompt.setTextSize(13);
         cbShowPanelPrompt.setTextColor(0xFF546E7A);
         cbShowPanelPrompt.setOnCheckedChangeListener((buttonView, isChecked) -> {
             prefs.edit().putBoolean(KEY_SHOW_SETTINGS_PANEL, isChecked).apply();
-            if (!isChecked && layoutPromptBanner != null) {
-                layoutPromptBanner.setVisibility(View.GONE);
-            }
         });
         rulesCard.addView(cbShowPanelPrompt);
 
@@ -351,7 +419,7 @@ public class MainActivity extends Activity {
         tvRulesDesc.setText(R.string.rule_desc);
         tvRulesDesc.setTextSize(12);
         tvRulesDesc.setTextColor(0xFF757575);
-        tvRulesDesc.setPadding(0, 6, 0, 14);
+        tvRulesDesc.setPadding(0, 6, 0, 12);
         rulesCard.addView(tvRulesDesc);
 
         // Signal Quality Threshold Slider
@@ -381,7 +449,7 @@ public class MainActivity extends Activity {
             public void onStopTrackingTouch(SeekBar seekBar) {
                 int val = Math.max(15, seekBar.getProgress());
                 prefs.edit().putInt(KEY_RSSI_THRESHOLD, val).apply();
-                logEvent("סף איכות קליטה הוגדר ל-" + val + "%");
+                logEvent("סף איכות קליטה עודכן ל-" + val + "%");
             }
         });
         rulesCard.addView(seekThreshold);
@@ -393,13 +461,13 @@ public class MainActivity extends Activity {
         btnRunMacroNow.setTextSize(15);
         btnRunMacroNow.setPadding(20, 14, 20, 14);
         btnRunMacroNow.setOnClickListener(v -> {
-            logEvent("בדיקת מאקרו יזומה...");
+            logEvent("הפעלת מאקרו יזומה על פי כללים...");
             evaluateMacroRules(true);
         });
         rulesCard.addView(btnRunMacroNow);
 
         root.addView(rulesCard);
-        addVerticalSpacer(root, 16);
+        addVerticalSpacer(root, 14);
 
         // 5. Trusted Networks Card
         LinearLayout networksCard = createCardLayout(this);
@@ -407,7 +475,7 @@ public class MainActivity extends Activity {
         networksCard.addView(tvNetHeader);
 
         TextView tvNetExpl = new TextView(this);
-        tvNetExpl.setText("הוסף את הרשת הביתית שלך כדי שהמאקרו יזהה אותה ויבצע את המעבר:");
+        tvNetExpl.setText("הרשתות שלהלן יזוהו אוטומטית ויחובר/ינותק אליהן החיבור בפועל:");
         tvNetExpl.setTextSize(12);
         tvNetExpl.setTextColor(0xFF616161);
         tvNetExpl.setPadding(0, 0, 0, 10);
@@ -428,33 +496,45 @@ public class MainActivity extends Activity {
         layoutNetworkList.setOrientation(LinearLayout.VERTICAL);
         networksCard.addView(layoutNetworkList);
 
-        // Manual network input row
-        LinearLayout addNetRow = new LinearLayout(this);
-        addNetRow.setOrientation(LinearLayout.HORIZONTAL);
-        addNetRow.setPadding(0, 10, 0, 0);
+        // Manual network input
+        LinearLayout addNetBox = new LinearLayout(this);
+        addNetBox.setOrientation(LinearLayout.VERTICAL);
+        addNetBox.setBackgroundResource(R.drawable.badge_bg);
+        addNetBox.setPadding(16, 12, 16, 12);
 
         final EditText etSsidInput = new EditText(this);
         etSsidInput.setHint(R.string.add_network_hint);
         etSsidInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        etSsidInput.setTextSize(14);
-        LinearLayout.LayoutParams etParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        addNetRow.addView(etSsidInput, etParams);
+        etSsidInput.setTextSize(13);
+        addNetBox.addView(etSsidInput);
 
-        Button btnAdd = createSmallButton(getString(R.string.add_button));
+        final EditText etPassInput = new EditText(this);
+        etPassInput.setHint(R.string.add_password_hint);
+        etPassInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        etPassInput.setTextSize(13);
+        addNetBox.addView(etPassInput);
+
+        Button btnAdd = new Button(this);
+        btnAdd.setText("➕ הוסף רשת למאקרו");
+        btnAdd.setBackgroundResource(R.drawable.btn_success);
+        btnAdd.setTextColor(0xFFFFFFFF);
+        btnAdd.setTextSize(13);
         btnAdd.setOnClickListener(v -> {
             String ssid = cleanSsid(etSsidInput.getText().toString().trim());
+            String pass = etPassInput.getText().toString().trim();
             if (ssid != null && !ssid.isEmpty()) {
-                addTrustedNetwork(ssid);
+                addTrustedNetwork(ssid, pass.isEmpty() ? null : pass);
                 etSsidInput.setText("");
+                etPassInput.setText("");
             } else {
                 Toast.makeText(this, "נא להזין שם רשת SSID", Toast.LENGTH_SHORT).show();
             }
         });
-        addNetRow.addView(btnAdd);
-        networksCard.addView(addNetRow);
+        addNetBox.addView(btnAdd);
+        networksCard.addView(addNetBox);
 
         root.addView(networksCard);
-        addVerticalSpacer(root, 16);
+        addVerticalSpacer(root, 14);
 
         // 6. Activity Execution Log Card
         LinearLayout logCard = createCardLayout(this);
@@ -491,7 +571,7 @@ public class MainActivity extends Activity {
         refreshKnownNetworksList();
         refreshLocationState();
         refreshNetworkState();
-        logEvent("המאקרו הופעל ומנטר ברקע");
+        logEvent("מאקרו אותחל: מוכן לפקודות חיבור וניתוק אמיתיות");
     }
 
     private void updateThresholdLabel(int value) {
@@ -549,7 +629,6 @@ public class MainActivity extends Activity {
     }
 
     private String getCurrentConnectedSsid() {
-        // Strategy 1: NetworkCapabilities (Android 10+ / Q+)
         if (connectivityManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 Network activeNet = connectivityManager.getActiveNetwork();
@@ -566,7 +645,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
         }
 
-        // Strategy 2: WifiManager ConnectionInfo
         if (wifiManager != null) {
             try {
                 WifiInfo info = wifiManager.getConnectionInfo();
@@ -577,7 +655,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
         }
 
-        // Strategy 3: NetworkInfo ExtraInfo
         if (connectivityManager != null) {
             try {
                 NetworkInfo netInfo = connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
@@ -626,7 +703,9 @@ public class MainActivity extends Activity {
         if (!wifiHardwareOn) {
             tvWifiStatus.setText(getString(R.string.label_wifi) + " כבוי במכשיר");
             if (btnQuickAddCurrent != null) btnQuickAddCurrent.setVisibility(View.GONE);
+            if (btnDisconnectNow != null) btnDisconnectNow.setEnabled(false);
         } else if (isConnected) {
+            if (btnDisconnectNow != null) btnDisconnectNow.setEnabled(true);
             WifiInfo info = (wifiManager != null) ? wifiManager.getConnectionInfo() : null;
             int rssi = (info != null) ? info.getRssi() : -65;
             int qual = calculateSignalPercent(rssi);
@@ -646,6 +725,7 @@ public class MainActivity extends Activity {
                 }
             }
         } else {
+            if (btnDisconnectNow != null) btnDisconnectNow.setEnabled(false);
             tvWifiStatus.setText(getString(R.string.label_wifi) + " דולק (מחפש רשת...)");
             if (btnQuickAddCurrent != null) btnQuickAddCurrent.setVisibility(View.GONE);
         }
@@ -667,7 +747,277 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Core automation algorithm: Safe, non-intrusive, never traps user with system dialogs
+     * Real Active Internet Ping - verifies actual traffic throughput
+     */
+    private void checkActiveInternetConnection() {
+        tvLivePingStatus.setText("בודק מעבר נתונים באינטרנט...");
+        new Thread(() -> {
+            boolean hasInternet = false;
+            String type = "ללא חיבור";
+            long timeTaken = 0;
+            try {
+                long start = System.currentTimeMillis();
+                URL url = new URL("https://connectivitycheck.gstatic.com/generate_204");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(2500);
+                conn.setReadTimeout(2500);
+                conn.setRequestMethod("GET");
+                conn.setUseCaches(false);
+                int code = conn.getResponseCode();
+                timeTaken = System.currentTimeMillis() - start;
+                hasInternet = (code == 204 || code == 200);
+                conn.disconnect();
+            } catch (Exception e) {
+                hasInternet = false;
+            }
+
+            if (isWifiConnected()) {
+                type = "Wi-Fi";
+            } else {
+                NetworkInfo mobile = connectivityManager != null ? connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_MOBILE) : null;
+                if (mobile != null && mobile.isConnected()) {
+                    type = "סלולר";
+                }
+            }
+
+            final boolean success = hasInternet;
+            final String netType = type;
+            final long pingMs = timeTaken;
+            runOnUiThread(() -> {
+                if (success) {
+                    tvLivePingStatus.setText(String.format(Locale.getDefault(),
+                            "🌐 גלישה פעילה ותקינה דרך: %s (%dms)", netType, pingMs));
+                    tvLivePingStatus.setTextColor(0xFF1B5E20);
+                } else {
+                    tvLivePingStatus.setText("⚠️ אין גישה לאינטרנט כרגע (" + netType + ")");
+                    tvLivePingStatus.setTextColor(0xFFC62828);
+                }
+            });
+        }).start();
+    }
+
+    /**
+     * Real hardware or settings panel toggle
+     */
+    private void toggleWifiHardware() {
+        if (wifiManager == null) return;
+        boolean currentState = wifiManager.isWifiEnabled();
+        boolean targetState = !currentState;
+
+        boolean directSuccess = false;
+        try {
+            directSuccess = wifiManager.setWifiEnabled(targetState);
+        } catch (Exception ignored) {}
+
+        if (directSuccess) {
+            logEvent("Wi-Fi " + (targetState ? "הופעל" : "כובה") + " בהצלחה ישירות");
+            Toast.makeText(this, targetState ? "Wi-Fi הופעל" : "Wi-Fi כובה", Toast.LENGTH_SHORT).show();
+            handler.postDelayed(() -> {
+                refreshNetworkState();
+                evaluateMacroRules(false);
+            }, 1000);
+        } else {
+            // Android 10+ restricts setWifiEnabled from 3rd party apps -> open Instant Panel
+            logEvent("הפעלה ישירה נחסמה ע״י מערכת ההפעלה -> פתיחת לוח בקרה מהיר");
+            openInternetSettingsPanel();
+        }
+    }
+
+    /**
+     * ACTUALLY connects to the specified SSID on ALL Android versions:
+     * - Uses modern WifiNetworkSpecifier & NetworkCallback on Android 10+
+     * - Uses WifiNetworkSuggestion for OS-level auto-switch
+     * - Uses WifiConfiguration and enableNetwork on older Android versions
+     */
+    public void performRealConnect(final String targetSsid, final boolean userInitiated) {
+        if (targetSsid == null || targetSsid.isEmpty()) return;
+        logEvent("מתחיל פעולת חיבור אמיתית אל: " + targetSsid);
+        Toast.makeText(this, "מתחבר ל-" + targetSsid + "...", Toast.LENGTH_SHORT).show();
+
+        // 1. Ensure Wi-Fi is enabled
+        if (wifiManager != null && !wifiManager.isWifiEnabled()) {
+            try {
+                wifiManager.setWifiEnabled(true);
+            } catch (Exception ignored) {}
+        }
+
+        final String storedPassword = prefs.getString(PREF_PASS_PREFIX + targetSsid, null);
+
+        // 2. Modern Android 10+ (API 29+) explicit connection
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && connectivityManager != null) {
+            try {
+                // Clear any previous network callback
+                if (activeNetworkCallback != null) {
+                    try {
+                        connectivityManager.unregisterNetworkCallback(activeNetworkCallback);
+                    } catch (Exception ignored) {}
+                    activeNetworkCallback = null;
+                }
+
+                WifiNetworkSpecifier.Builder specifierBuilder = new WifiNetworkSpecifier.Builder()
+                        .setSsid(targetSsid);
+
+                if (storedPassword != null && !storedPassword.isEmpty()) {
+                    specifierBuilder.setWpa2Passphrase(storedPassword);
+                }
+
+                NetworkRequest request = new NetworkRequest.Builder()
+                        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                        .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                        .setNetworkSpecifier(specifierBuilder.build())
+                        .build();
+
+                activeNetworkCallback = new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        super.onAvailable(network);
+                        currentlyBoundSsid = targetSsid;
+                        logEvent("✔ חיבור הושלם בהצלחה לרשת: " + targetSsid);
+                        runOnUiThread(() -> {
+                            refreshNetworkState();
+                            checkActiveInternetConnection();
+                            Toast.makeText(MainActivity.this, "מחובר ל-" + targetSsid, Toast.LENGTH_SHORT).show();
+                        });
+                    }
+
+                    @Override
+                    public void onLost(Network network) {
+                        super.onLost(network);
+                        logEvent("רשת אבדה: " + targetSsid);
+                        currentlyBoundSsid = null;
+                        runOnUiThread(() -> {
+                            refreshNetworkState();
+                            evaluateMacroRules(false);
+                        });
+                    }
+
+                    @Override
+                    public void onUnavailable() {
+                        super.onUnavailable();
+                        logEvent("לא ניתן היה להשלים חיבור אל " + targetSsid);
+                    }
+                };
+
+                connectivityManager.requestNetwork(request, activeNetworkCallback);
+                logEvent("נשלחה בקשת חיבור מערכתית (Specifier) ל-" + targetSsid);
+
+                // Also register suggestion for OS priority
+                try {
+                    WifiNetworkSuggestion.Builder suggBuilder = new WifiNetworkSuggestion.Builder()
+                            .setSsid(targetSsid)
+                            .setIsAppInteractionRequired(false);
+                    if (storedPassword != null && !storedPassword.isEmpty()) {
+                        suggBuilder.setWpa2Passphrase(storedPassword);
+                    }
+                    List<WifiNetworkSuggestion> list = new ArrayList<WifiNetworkSuggestion>();
+                    list.add(suggBuilder.build());
+                    wifiManager.addNetworkSuggestions(list);
+                } catch (Exception ignored) {}
+
+            } catch (Exception e) {
+                logEvent("שגיאת חיבור אנדרואיד 10+: " + e.getMessage());
+            }
+        }
+
+        // 3. Fallback / Native WifiConfiguration for API <= 28 or OEM support
+        if (wifiManager != null) {
+            try {
+                int targetNetId = -1;
+                List<WifiConfiguration> configured = null;
+                try {
+                    configured = wifiManager.getConfiguredNetworks();
+                } catch (SecurityException ignored) {}
+
+                if (configured != null) {
+                    for (WifiConfiguration config : configured) {
+                        String clean = cleanSsid(config.SSID);
+                        if (clean != null && clean.equalsIgnoreCase(targetSsid)) {
+                            targetNetId = config.networkId;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetNetId == -1) {
+                    WifiConfiguration newConf = new WifiConfiguration();
+                    newConf.SSID = "\"" + targetSsid + "\"";
+                    if (storedPassword != null && !storedPassword.isEmpty()) {
+                        newConf.preSharedKey = "\"" + storedPassword + "\"";
+                    } else {
+                        newConf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+                    }
+                    targetNetId = wifiManager.addNetwork(newConf);
+                }
+
+                if (targetNetId != -1) {
+                    wifiManager.disconnect();
+                    boolean enabled = wifiManager.enableNetwork(targetNetId, true);
+                    boolean reconnected = wifiManager.reconnect();
+                    logEvent(String.format(Locale.getDefault(),
+                            "פקודת EnableNetwork ל-NetId %d: תוצאה=%b, reconnect=%b",
+                            targetNetId, enabled, reconnected));
+                } else {
+                    wifiManager.reconnect();
+                }
+            } catch (Exception e) {
+                logEvent("הפעלת חיבור: " + e.getMessage());
+            }
+        }
+
+        handler.postDelayed(() -> {
+            refreshNetworkState();
+            checkActiveInternetConnection();
+        }, 3000);
+    }
+
+    /**
+     * ACTUALLY disconnects Wi-Fi so cellular data immediately routes the device traffic
+     */
+    public void performRealDisconnect(boolean userInitiated) {
+        logEvent("מבצע ניתוק Wi-Fi אמיתי לשחרור נתונים לסלולר...");
+
+        // 1. Release active NetworkCallback if any
+        if (activeNetworkCallback != null && connectivityManager != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(activeNetworkCallback);
+                logEvent("שוחרר NetworkCallback של החיבור");
+            } catch (Exception ignored) {}
+            activeNetworkCallback = null;
+            currentlyBoundSsid = null;
+        }
+
+        // 2. Disconnect and Disable network via WifiManager
+        if (wifiManager != null) {
+            try {
+                WifiInfo info = wifiManager.getConnectionInfo();
+                if (info != null && info.getNetworkId() != -1) {
+                    wifiManager.disableNetwork(info.getNetworkId());
+                }
+                wifiManager.disconnect();
+                logEvent("נשלחה פקודת wifiManager.disconnect() ונטרול רשת");
+            } catch (Exception e) {
+                logEvent("שגיאת ניתוק: " + e.getMessage());
+            }
+
+            // If user explicitly asked or rule says disconnect far, try setWifiEnabled(false) on older versions
+            if (prefs.getBoolean(KEY_DISCONNECT_FAR, true) && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                try {
+                    wifiManager.setWifiEnabled(false);
+                    logEvent("כיבוי מתג Wi-Fi למעבר מיידי לסלולר");
+                } catch (Exception ignored) {}
+            }
+        }
+
+        Toast.makeText(this, "Wi-Fi נותק - גלישה סלולרית פעילה", Toast.LENGTH_SHORT).show();
+
+        handler.postDelayed(() -> {
+            refreshNetworkState();
+            checkActiveInternetConnection();
+        }, 1500);
+    }
+
+    /**
+     * Core automation evaluation
      */
     private void evaluateMacroRules(boolean userTriggered) {
         if (!isMacroEnabled()) {
@@ -684,29 +1034,37 @@ public class MainActivity extends Activity {
         String currentSsid = cleanSsid(getCurrentConnectedSsid());
         boolean connectedToWifi = isWifiConnected();
 
-        // 1. Are we ALREADY connected to Wi-Fi?
+        // 1. Currently connected to Wi-Fi?
         if (connectedToWifi) {
             WifiInfo info = wifiManager.getConnectionInfo();
             int rssi = (info != null) ? info.getRssi() : -65;
             int quality = calculateSignalPercent(rssi);
 
             boolean isTrusted = (currentSsid != null && isKnownNetwork(currentSsid, savedSsids));
-            if (!isTrusted && currentSsid != null && savedSsids.isEmpty()) {
-                addTrustedNetwork(currentSsid);
-                savedSsids = prefs.getStringSet(KEY_SAVED_SSIDS, new HashSet<String>());
-                isTrusted = true;
+
+            // If connected to a trusted network with strong signal:
+            if (isTrusted && quality >= targetThreshold) {
+                applyStateWifiConnected(currentSsid, quality, userTriggered);
+                return;
             }
 
-            if (isTrusted || (currentSsid == null && !savedSsids.isEmpty())) {
-                String networkName = (currentSsid != null) ? currentSsid : "Wi-Fi מוכר";
-                applyStateWifiConnected(networkName, quality, userTriggered);
-                refreshNetworkState();
-                isFirstRunEvaluation = false;
+            // If connected to trusted network BUT signal degraded below threshold:
+            if (isTrusted && quality < targetThreshold && prefs.getBoolean(KEY_DISCONNECT_FAR, true)) {
+                logEvent(String.format(Locale.getDefault(),
+                        "איכות קליטה של '%s' ירדה ל-%d%% (מתחת ל-%d%%). מנתק למעבר חלק לסלולר!",
+                        currentSsid, quality, targetThreshold));
+                performRealDisconnect(false);
+                applyStateOutOfRangeCellularOn(userTriggered, false, targetThreshold);
+                return;
+            }
+
+            if (isTrusted) {
+                applyStateWifiConnected(currentSsid, quality, userTriggered);
                 return;
             }
         }
 
-        // 2. Scan for saved SSIDs in range
+        // 2. Scan for trusted candidate in range
         try {
             wifiManager.startScan();
         } catch (Exception ignored) {}
@@ -714,11 +1072,7 @@ public class MainActivity extends Activity {
         List<ScanResult> results = null;
         try {
             results = wifiManager.getScanResults();
-        } catch (SecurityException se) {
-            if (userTriggered) {
-                logEvent("הערה: נדרשת הרשאת מיקום לסריקת שמות רשתות.");
-            }
-        }
+        } catch (SecurityException ignored) {}
 
         ScanResult bestCandidate = null;
         int bestQuality = 0;
@@ -739,22 +1093,26 @@ public class MainActivity extends Activity {
         if (bestCandidate != null) {
             String candidateSsid = cleanSsid(bestCandidate.SSID);
             logEvent(String.format(Locale.getDefault(),
-                    "רשת מוכרת זוהתה בטווח: '%s' (איכות %d%%)",
+                    "רשת מוכרת '%s' זוהתה בטווח (איכות %d%%) -> מבצע חיבור!",
                     candidateSsid, bestQuality));
 
-            attemptConnectToSsid(candidateSsid);
+            if (prefs.getBoolean(KEY_AUTO_CELLULAR, true)) {
+                performRealConnect(candidateSsid, false);
+            }
             applyStateWifiConnected(candidateSsid, bestQuality, userTriggered);
         } else {
-            // Not connected and no trusted network found in range
+            // Out of range: If previously connected to weak wifi or hanging, disconnect
+            if (connectedToWifi && prefs.getBoolean(KEY_DISCONNECT_FAR, true)) {
+                logEvent("מחוץ לטווח רשת מוכרת -> מנתק Wi-Fi לטובת סלולר");
+                performRealDisconnect(false);
+            }
             applyStateOutOfRangeCellularOn(userTriggered, savedSsids.isEmpty(), targetThreshold);
         }
 
         refreshNetworkState();
-        isFirstRunEvaluation = false;
     }
 
     private void applyStateWifiConnected(String ssid, int quality, boolean userTriggered) {
-        boolean stateChanged = (currentMacroState != STATE_CONNECTED_CELLULAR_OFF);
         currentMacroState = STATE_CONNECTED_CELLULAR_OFF;
 
         runOnUiThread(() -> {
@@ -763,21 +1121,22 @@ public class MainActivity extends Activity {
             tvOverallStatusBanner.setBackgroundResource(R.drawable.bg_status_badge);
 
             boolean promptRequested = prefs.getBoolean(KEY_SHOW_SETTINGS_PANEL, false);
-            if (promptRequested && stateChanged && !isFirstRunEvaluation) {
-                tvPromptText.setText("📶 התחברת ל-Wi-Fi (" + ssid + "). ניתן לכבות סלולר לחיסכון בסוללה:");
+            if (promptRequested) {
+                tvPromptText.setText("📶 מחובר ל-Wi-Fi (" + ssid + "). ניתן לכבות סלולר לחיסכון:");
+                btnPromptAction.setText("הגדרות סלולר");
+                btnPromptAction.setOnClickListener(v -> openCellularSettings());
                 layoutPromptBanner.setVisibility(View.VISIBLE);
             }
         });
 
         if (userTriggered) {
-            showDialogResult("מאקרו פועל - Wi-Fi מחובר",
+            showDialogResult("מאקרו - Wi-Fi מחובר",
                     "מכשירך מחובר לרשת המוכרת '" + ssid + "' באיכות מעולה (" + quality + "%).\n" +
-                    "מומלץ לכבות גלישה סלולרית לחיסכון בסוללה.");
+                            "תעבורת הנתונים מתבצעת כעת דרך ה-Wi-Fi.");
         }
     }
 
     private void applyStateOutOfRangeCellularOn(boolean userTriggered, boolean noSaved, int threshold) {
-        boolean stateChanged = (currentMacroState != STATE_DISCONNECTED_CELLULAR_ON);
         currentMacroState = STATE_DISCONNECTED_CELLULAR_ON;
 
         runOnUiThread(() -> {
@@ -786,43 +1145,19 @@ public class MainActivity extends Activity {
             tvOverallStatusBanner.setBackgroundResource(R.drawable.bg_warning_badge);
 
             boolean promptRequested = prefs.getBoolean(KEY_SHOW_SETTINGS_PANEL, false);
-            if (promptRequested && stateChanged && !isFirstRunEvaluation) {
-                tvPromptText.setText("⚡ יצאת מטווח Wi-Fi: ודא שגלישה סלולרית פעילה לרציפות גלישה:");
+            if (promptRequested) {
+                tvPromptText.setText("⚡ מחוץ לטווח Wi-Fi: פתח בקרה לוודא שסלולר דולק:");
+                btnPromptAction.setText("לוח בקרה מהיר");
+                btnPromptAction.setOnClickListener(v -> openInternetSettingsPanel());
                 layoutPromptBanner.setVisibility(View.VISIBLE);
             }
         });
 
         if (userTriggered) {
             String reason = noSaved ?
-                    "טרם הוגדרו רשתות מוכרות ברשימה. נא להוסיף את הרשת הביתית שלך תחילה." :
-                    "לא אותרה רשת מוכרת בטווח מעל סף האיכות (" + threshold + "%).\nמומלץ לוודא שהרשת הסלולרית פעילה לשמירה על אינטרנט רציף.";
+                    "טרם הוגדרו רשתות מוכרות ברשימה. הוסף את הרשת הביתית כדי שהמאקרו יתחבר אליה." :
+                    "לא אותרה רשת מוכרת בטווח מעל סף האיכות (" + threshold + "%).\nהחיבור מנותק לטובת גלישה סלולרית רציפה.";
             showDialogResult("מחוץ לטווח Wi-Fi", reason);
-        }
-    }
-
-    private void attemptConnectToSsid(String targetSsid) {
-        if (wifiManager == null || targetSsid == null) return;
-        try {
-            List<WifiConfiguration> configs = null;
-            try {
-                configs = wifiManager.getConfiguredNetworks();
-            } catch (SecurityException ignored) {}
-
-            if (configs != null) {
-                for (WifiConfiguration config : configs) {
-                    String clean = cleanSsid(config.SSID);
-                    if (clean != null && clean.equalsIgnoreCase(targetSsid)) {
-                        wifiManager.disconnect();
-                        wifiManager.enableNetwork(config.networkId, true);
-                        wifiManager.reconnect();
-                        logEvent("שליחת פקודת התחברות ל-" + targetSsid);
-                        return;
-                    }
-                }
-            }
-            wifiManager.reconnect();
-        } catch (Exception e) {
-            logEvent("ניסיון חיבור: " + e.getMessage());
         }
     }
 
@@ -830,13 +1165,13 @@ public class MainActivity extends Activity {
         final List<String> availableSSIDs = new ArrayList<String>();
         Set<String> alreadySaved = prefs.getStringSet(KEY_SAVED_SSIDS, new HashSet<String>());
 
-        // 1. Current connected network
+        // Current connected
         String current = cleanSsid(getCurrentConnectedSsid());
         if (current != null && !current.isEmpty()) {
             availableSSIDs.add(current);
         }
 
-        // 2. Current scan results
+        // Scan results
         try {
             if (wifiManager != null) {
                 wifiManager.startScan();
@@ -852,7 +1187,7 @@ public class MainActivity extends Activity {
             }
         } catch (SecurityException ignored) {}
 
-        // 3. Device configured networks
+        // Configured networks
         try {
             if (wifiManager != null) {
                 List<WifiConfiguration> configured = wifiManager.getConfiguredNetworks();
@@ -922,7 +1257,7 @@ public class MainActivity extends Activity {
 
         builder.setNeutralButton("רענן סריקה", (dialog, which) -> {
             if (wifiManager != null) wifiManager.startScan();
-            handler.postDelayed(this::showDeviceNetworksDialog, 1000);
+            handler.postDelayed(this::showDeviceNetworksDialog, 800);
         });
 
         builder.setNegativeButton("ביטול", null);
@@ -947,15 +1282,20 @@ public class MainActivity extends Activity {
         return 2 * (rssi + 100);
     }
 
-    private void addTrustedNetwork(String ssid) {
+    private void addTrustedNetwork(String ssid, String password) {
         String clean = cleanSsid(ssid);
         if (clean == null || clean.isEmpty()) return;
         Set<String> saved = new HashSet<String>(prefs.getStringSet(KEY_SAVED_SSIDS, new HashSet<String>()));
         saved.add(clean);
-        prefs.edit().putStringSet(KEY_SAVED_SSIDS, saved).apply();
+        SharedPreferences.Editor editor = prefs.edit().putStringSet(KEY_SAVED_SSIDS, saved);
+        if (password != null && !password.isEmpty()) {
+            editor.putString(PREF_PASS_PREFIX + clean, password);
+        }
+        editor.apply();
+
         refreshKnownNetworksList();
         refreshNetworkState();
-        logEvent("רשת הוגדרה כרשת מוכרת: " + clean);
+        logEvent("רשת נוספה למאקרו: " + clean);
         Toast.makeText(this, "רשת " + clean + " נוספה בהצלחה", Toast.LENGTH_SHORT).show();
         evaluateMacroRules(false);
     }
@@ -965,7 +1305,9 @@ public class MainActivity extends Activity {
         Set<String> saved = new HashSet<String>(prefs.getStringSet(KEY_SAVED_SSIDS, new HashSet<String>()));
         if (clean != null) saved.remove(clean);
         saved.remove(ssid);
-        prefs.edit().putStringSet(KEY_SAVED_SSIDS, saved).apply();
+        prefs.edit().putStringSet(KEY_SAVED_SSIDS, saved)
+                .remove(PREF_PASS_PREFIX + (clean != null ? clean : ssid))
+                .apply();
         refreshKnownNetworksList();
         refreshNetworkState();
         logEvent("רשת הוסרה: " + ssid);
@@ -979,7 +1321,7 @@ public class MainActivity extends Activity {
         Set<String> saved = prefs.getStringSet(KEY_SAVED_SSIDS, new HashSet<String>());
         if (saved == null || saved.isEmpty()) {
             TextView emptyTv = new TextView(this);
-            emptyTv.setText("אין רשתות מוגדרות. הקש 'ייבא מרשתות המכשיר' או הוסף ידנית למעלה.");
+            emptyTv.setText("אין רשתות מוגדרות. הקש 'ייבא מרשתות המכשיר' או הוסף ידנית למטה.");
             emptyTv.setTextSize(13);
             emptyTv.setTextColor(0xFF9E9E9E);
             emptyTv.setPadding(0, 8, 0, 8);
@@ -987,30 +1329,67 @@ public class MainActivity extends Activity {
             return;
         }
 
+        String currentActive = cleanSsid(getCurrentConnectedSsid());
+
         for (final String ssid : saved) {
+            boolean isCur = (currentActive != null && currentActive.equalsIgnoreCase(ssid));
+
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, 8, 0, 8);
+            row.setBackgroundResource(isCur ? R.drawable.badge_connected : R.drawable.badge_bg);
+            row.setPadding(14, 10, 14, 10);
 
             TextView tvName = new TextView(this);
-            tvName.setText("📶 " + ssid);
+            tvName.setText((isCur ? "🟢 " : "📶 ") + ssid);
             tvName.setTextSize(14);
-            tvName.setTextColor(0xFF212121);
+            tvName.setTextColor(isCur ? 0xFF1B5E20 : 0xFF212121);
+            tvName.setTypeface(isCur ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
             row.addView(tvName, lp);
+
+            // Direct Connect Button
+            Button btnConnect = new Button(this);
+            btnConnect.setText(isCur ? "מחובר" : "התחבר");
+            btnConnect.setTextSize(12);
+            btnConnect.setTextColor(0xFFFFFFFF);
+            btnConnect.setBackgroundResource(isCur ? R.drawable.btn_success : R.drawable.btn_primary);
+            btnConnect.setPadding(14, 4, 14, 4);
+            btnConnect.setOnClickListener(v -> performRealConnect(ssid, true));
+            row.addView(btnConnect);
 
             Button btnDelete = new Button(this);
             btnDelete.setText("מחק");
             btnDelete.setTextSize(12);
             btnDelete.setTextColor(0xFFC62828);
             btnDelete.setBackgroundResource(R.drawable.badge_bg);
-            btnDelete.setPadding(16, 6, 16, 6);
+            btnDelete.setPadding(12, 4, 12, 4);
+            LinearLayout.LayoutParams lpDel = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lpDel.setMargins(8, 0, 0, 0);
+            btnDelete.setLayoutParams(lpDel);
             btnDelete.setOnClickListener(v -> removeTrustedNetwork(ssid));
             row.addView(btnDelete);
 
             layoutNetworkList.addView(row);
+            addVerticalSpacer(layoutNetworkList, 6);
         }
+    }
+
+    private void openInternetSettingsPanel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                // Opens system mini bottom-sheet panel directly inside the screen!
+                Intent panelIntent = new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY);
+                startActivity(panelIntent);
+                return;
+            } catch (Exception ignored) {}
+            try {
+                Intent panelIntent = new Intent(Settings.Panel.ACTION_WIFI);
+                startActivity(panelIntent);
+                return;
+            } catch (Exception ignored) {}
+        }
+        openWifiSettings();
     }
 
     private void openWifiSettings() {
@@ -1029,9 +1408,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * Opens Cellular / Wireless settings safely when explicitly requested by user click
-     */
     private void openCellularSettings() {
         try {
             Intent intent = new Intent(Settings.ACTION_DATA_ROAMING_SETTINGS);
@@ -1073,7 +1449,7 @@ public class MainActivity extends Activity {
         LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setBackgroundResource(R.drawable.bg_card);
-        layout.setPadding(26, 22, 26, 22);
+        layout.setPadding(24, 20, 24, 20);
         layout.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         return layout;
     }
@@ -1094,7 +1470,7 @@ public class MainActivity extends Activity {
         btn.setTextSize(13);
         btn.setTextColor(0xFF1976D2);
         btn.setBackgroundResource(R.drawable.btn_secondary);
-        btn.setPadding(20, 10, 20, 10);
+        btn.setPadding(18, 10, 18, 10);
         return btn;
     }
 
@@ -1111,6 +1487,7 @@ public class MainActivity extends Activity {
             public void onReceive(Context context, Intent intent) {
                 refreshLocationState();
                 refreshNetworkState();
+                checkActiveInternetConnection();
                 if (isMacroEnabled()) {
                     evaluateMacroRules(false);
                 }
@@ -1134,6 +1511,11 @@ public class MainActivity extends Activity {
             if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 needed.add(android.Manifest.permission.ACCESS_COARSE_LOCATION);
             }
+            if (Build.VERSION.SDK_INT >= 33) {
+                if (checkSelfPermission("android.permission.NEARBY_WIFI_DEVICES") != PackageManager.PERMISSION_GRANTED) {
+                    needed.add("android.permission.NEARBY_WIFI_DEVICES");
+                }
+            }
             if (!needed.isEmpty()) {
                 requestPermissions(needed.toArray(new String[0]), PERMISSION_REQ_CODE);
             }
@@ -1152,11 +1534,11 @@ public class MainActivity extends Activity {
                 }
             }
             if (allGranted) {
-                logEvent("הרשאות סריקת רשתות אושרו בהצלחה");
+                logEvent("הרשאות רשת ומיקום אושרו בהצלחה");
                 refreshNetworkState();
                 evaluateMacroRules(false);
             } else {
-                logEvent("אזהרה: ללא הרשאת מיקום, זיהוי שמות רשתות נחסם ע״י אנדרואיד.");
+                logEvent("הערה: חלק מההרשאות לא אושרו - סריקת רשתות עשויה להיות מוגבלת ע״י אנדרואיד.");
             }
         }
     }
@@ -1166,6 +1548,7 @@ public class MainActivity extends Activity {
         super.onResume();
         refreshLocationState();
         refreshNetworkState();
+        checkActiveInternetConnection();
         handler.removeCallbacks(statusUpdater);
         handler.post(statusUpdater);
     }
@@ -1183,6 +1566,12 @@ public class MainActivity extends Activity {
             try {
                 unregisterReceiver(networkReceiver);
             } catch (Exception ignored) {}
+        }
+        if (activeNetworkCallback != null && connectivityManager != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(activeNetworkCallback);
+            } catch (Exception ignored) {}
+            activeNetworkCallback = null;
         }
     }
 }

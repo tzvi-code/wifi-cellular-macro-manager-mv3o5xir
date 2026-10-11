@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">מאקרו ניתוק/חיבור חכם</string>
+    <string name="title_macro_status">מצב המאקרו האוטומטי</string>
+    <string name="macro_active">מאקרו פעיל ומנטר רשתות</string>
+    <string name="macro_inactive">מאקרו מושבת</string>
+    <string name="title_network_status">סטטוס רשת נוכחי</string>
+    <string name="label_wifi">חיבור אלחוטי (Wi-Fi):</string>
+    <string name="label_cellular">חיבור סלולרי:</string>
+    <string name="title_rules">הגדרות מאקרו חכם</string>
+    <string name="rule_pref_wifi">חבר ל-Wi-Fi ונתק סלולרי ברשת איכותית</string>
+    <string name="rule_signal_threshold">סף איכות קליטה מינימלי (RSSI):</string>
+    <string name="rule_desc">כאשר רשת Wi-Fi מוכרת מציגה עוצמת קליטה מעל הסף, המאקרו יחבר אליה אוטומטית וינטרל חיבור סלולרי לחסכון בסוללה ובגלישה.</string>
+    <string name="action_evaluate">הרץ בדיקת מאקרו עכשיו</string>
+    <string name="action_open_data_settings">הגדרות סלולר במכשיר</string>
+    <string name="action_open_wifi_settings">הגדרות Wi-Fi במכשיר</string>
+    <string name="title_saved_networks">רשתות Wi-Fi מורשות במאקרו</string>
+    <string name="add_network_hint">שם רשת (SSID) מועדפת...</string>
+    <string name="add_button">הוסף</string>
+    <string name="title_activity_log">יומן פעילות המאקרו</string>
+    <string name="clear_log">נקה יומן</string>
+    <string name="permission_notice">יש לאשר הרשאות מיקום על מנת לסרוק ולזהות איכות רשתות Wi-Fi סמוכות.</string>
+</resources>

@@ -1,30 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">מאקרו Wi-Fi וסלולר חכם</string>
-    <string name="app_subtitle">ניהול חכם של רשתות: התחברות בטווח וכיבוי סלולר, או הפעלת סלולר בעת התרחקות</string>
+    <string name="app_subtitle">ניהול חכם של רשתות: זיהוי רשתות מוכרות, חיסכון בסוללה ושמירה על רציפות גלישה</string>
     <string name="title_macro_status">מצב המאקרו האוטומטי</string>
     <string name="macro_active">מאקרו פעיל ומנטר מעברי רשת</string>
     <string name="macro_inactive">מאקרו מושבת</string>
-    <string name="label_current_state">מצב נוכחי של המכשיר:</string>
+    <string name="label_current_state">מצב חיבור נוכחי בזמן אמת</string>
     <string name="label_wifi">Wi-Fi:</string>
     <string name="label_cellular">רשת סלולרית:</string>
     <string name="action_add_current_wifi">הוסף רשת זו כרשת מוכרת</string>
     <string name="title_rules">כללי אוטומציה חכמה</string>
-    <string name="rule_auto_switch">ניהול סלולר אוטומטי (כיבוי ב-Wi-Fi והדלקה בהתרחקות)</string>
-    <string name="rule_open_settings_prompt">הצג חלונית סלולר מהירה למעבר מידי</string>
-    <string name="rule_desc">בעת הימצאות בטווח רשת מוכרת: מעבר ל-Wi-Fi והשהיית סלולר לחיסכון בסוללה. בעת התרחקות או אובדן קליטה: הפעלה מהירה של הסלולר להבטחת רציפות גלישה.</string>
+    <string name="rule_auto_switch">ניטור אוטומטי ובדיקת איכות קליטה</string>
+    <string name="rule_open_settings_prompt">הצג המלצה מהירה בתוך האפליקציה במעבר רשת</string>
+    <string name="rule_desc">בעת הימצאות בטווח רשת מוכרת: מועבר חיבור ל-Wi-Fi. בעת התרחקות מחוץ לטווח: מוודא שהסלולר מוכן לגלישה רציפה.</string>
     <string name="action_evaluate">בדוק מצב רשתות עכשיו</string>
     <string name="action_open_data_settings">הגדרות סלולר</string>
     <string name="action_open_wifi_settings">הגדרות Wi-Fi</string>
     <string name="action_open_location_settings">הפעל שירותי מיקום במכשיר</string>
-    <string name="location_needed_explanation">⚠️ שירותי המיקום (GPS) כבויים במכשיר. אנדרואיד מסתיר את שמות רשתות ה-Wi-Fi ללא מיקום פועל. יש להפעיל מיקום כדי לזהות רשתות.</string>
+    <string name="location_needed_explanation">⚠️ שירותי המיקום (GPS) כבויים. מערכת אנדרואיד מסתירה שמות רשתות Wi-Fi ללא מיקום פעיל. יש להפעיל מיקום לזיהוי שמות הרשתות.</string>
     <string name="title_saved_networks">רשתות מוכרות במאקרו</string>
     <string name="import_device_networks">ייבא מרשתות המכשיר / סריקה</string>
     <string name="add_network_hint">שם רשת (SSID) ידני...</string>
     <string name="add_button">הוסף</string>
     <string name="title_activity_log">יומן פעילות המאקרו</string>
     <string name="clear_log">נקה יומן</string>
-    <string name="state_wifi_active">מחובר לרשת מוכרת (סלולר כבוי)</string>
-    <string name="state_cellular_active">מחוץ לטווח Wi-Fi (סלולר מופעל לגיבוי)</string>
+    <string name="state_wifi_active">מחובר לרשת מוכרת</string>
+    <string name="state_cellular_active">מחוץ לטווח רשת מוכרת (סלולר מומלץ)</string>
     <string name="state_searching">סורק רשתות מוכרות בטווח...</string>
 </resources>

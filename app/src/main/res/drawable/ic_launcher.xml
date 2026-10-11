@@ -3,30 +3,38 @@
     android:height="96dp"
     android:viewportWidth="96"
     android:viewportHeight="96">
-    <!-- Rounded Background in Rich Navy Blue -->
+    <!-- Rounded Background in Premium Navy Slate -->
     <path
-        android:fillColor="#0D47A1"
-        android:pathData="M20,6h56c8.8,0 16,7.2 16,16v52c0,8.8 -7.2,16 -16,16h-56c-8.8,0 -16,-7.2 -16,-16v-52c0,-8.8 7.2,-16 16,-16z" />
-    <!-- Curved Wi-Fi signal arcs in crisp white -->
+        android:fillColor="#0A2540"
+        android:pathData="M22,8h52c9.9,0 18,8.1 18,18v44c0,9.9 -8.1,18 -18,18h-52c-9.9,0 -18,-8.1 -18,-18v-44c0,-9.9 8.1,-18 18,-18z" />
+    
+    <!-- Outer Wi-Fi Arc in Cyan Accent -->
+    <path
+        android:fillColor="#00D4B2"
+        android:pathData="M48,22c-15.5,0 -29.5,6.3 -39.6,16.5l5.7,5.7c8.6,-8.7 20.6,-14.2 33.9,-14.2s25.3,5.5 33.9,14.2l5.7,-5.7c-10.1,-10.2 -24.1,-16.5 -39.6,-16.5z" />
+
+    <!-- Middle Wi-Fi Arc in Pure White -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M48,22c-15,0 -28.6,6.1 -38.5,16l5.7,5.7c8.5,-8.5 20.2,-13.7 32.8,-13.7s24.3,5.2 32.8,13.7l5.7,-5.7c-9.9,-9.9 -23.5,-16 -38.5,-16z" />
+        android:pathData="M48,36c-11.6,0 -22.1,4.7 -29.7,12.3l5.7,5.7c6.1,-6.1 14.6,-10 24,-10s17.9,3.9 24,10l5.7,-5.7c-7.6,-7.6 -18.1,-12.3 -29.7,-12.3z" />
+
+    <!-- Inner Wi-Fi Arc in Pure White -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M48,36c-11.1,0 -21.2,4.5 -28.5,11.8l5.7,5.7c5.9,-5.9 14,-9.5 22.8,-9.5s16.9,3.6 22.8,9.5l5.7,-5.7c-7.3,-7.3 -17.4,-11.8 -28.5,-11.8z" />
+        android:pathData="M48,50c-7.7,0 -14.7,3.1 -19.8,8.2l5.7,5.7c3.6,-3.6 8.6,-5.9 14.1,-5.9s10.5,2.3 14.1,5.9l5.7,-5.7c-5.1,-5.1 -12.1,-8.2 -19.8,-8.2z" />
+
+    <!-- Central Wi-Fi Core Dot -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M48,50c-7.2,0 -13.7,2.9 -18.5,7.7l5.7,5.7c3.4,-3.4 8,-5.4 12.8,-5.4s9.4,2 12.8,5.4l5.7,-5.7c-4.8,-4.8 -11.3,-7.7 -18.5,-7.7z" />
-    <!-- Wi-Fi Base Node -->
+        android:fillColor="#00D4B2"
+        android:pathData="M48,67a5,5 0 1,0 0,10a5,5 0 1,0 0,-10z" />
+
+    <!-- Cellular Automation Pill Badge Container -->
     <path
-        android:fillColor="#64B5F6"
-        android:pathData="M48,66a5,5 0 1,0 0,10a5,5 0 1,0 0,-10z" />
-    <!-- Cellular Switch Badge Container -->
-    <path
-        android:fillColor="#00C853"
-        android:pathData="M64,58h22c4.4,0 8,3.6 8,8v18c0,4.4 -3.6,8 -8,8h-22c-4.4,0 -8,-3.6 -8,-8v-18c0,-4.4 3.6,-8 8,-8z" />
+        android:fillColor="#1565C0"
+        android:pathData="M60,56h24c5.5,0 10,4.5 10,10v18c0,5.5 -4.5,10 -10,10h-24c-5.5,0 -10,-4.5 -10,-10v-18c0,-5.5 4.5,-10 10,-10z" />
+
     <!-- Cellular Signal Bars inside the badge -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M68,84h3v-4h-3v4z M74,84h3v-9h-3v9z M80,84h3v-14h-3v14z M86,84h3v-19h-3v19z" />
+        android:pathData="M64,84h4v-5h-4v5z M71,84h4v-11h-4v11z M78,84h4v-17h-4v17z M85,84h4v-23h-4v23z" />
 </vector>
